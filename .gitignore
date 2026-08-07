@@ -1,0 +1,60 @@
+# =============================================================================
+# Root ignore for the whole 10-Days-of-Voice-Agents workspace.
+# Each day's folder also carries its own .gitignore; this is the safety net so
+# a new day folder is never unprotected on the day it is created.
+# =============================================================================
+
+# --- Secrets -----------------------------------------------------------------
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Google Cloud / Vertex credentials. ADC normally lives outside the repo, but
+# service-account keys do get copied in — never let one be committed.
+application_default_credentials.json
+service-account*.json
+gcloud-*.json
+*-key.json
+credentials.json
+*.pem
+*.p12
+*.pfx
+
+# --- Dependencies & build output ---------------------------------------------
+**/node_modules/
+**/.venv/
+**/venv/
+**/__pycache__/
+*.py[cod]
+**/*.egg-info/
+**/.next/
+**/out/
+**/build/
+**/dist/
+
+# --- Tool caches --------------------------------------------------------------
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+**/.turbo/
+
+# --- Generated media ----------------------------------------------------------
+# Murf TTS output from voice/accent testing. Regenerable, and it grows fast.
+voice-samples/
+*.mp3
+*.wav
+
+# --- Editors & OS -------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# --- Logs ---------------------------------------------------------------------
+*.log
+npm-debug.log*
+pnpm-debug.log*
