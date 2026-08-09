@@ -14,16 +14,31 @@ how you teach someone next time:
 
 Deliberately NOT stored: anything that is not about learning. No phone number,
 no school, no address, no marks. A CS tutor has no business holding those.
+
+THREADING NOTE — this is the whole reason for the structure below.
+
+asyncpg resolves hostnames via `loop.getaddrinfo`, which runs on the event
+loop's DEFAULT executor. LiveKit shuts that executor down during a job, so any
+connection opened afterwards dies with "Executor shutdown has been called".
+
+Replacing the loop's default executor looks like the fix. It is not: LiveKit's
+own Deepgram STT and aiohttp share that executor, so substituting ours made the
+microphone fail mid-call with "cannot schedule new futures after shutdown" and
+killed the session unrecoverably.
+
+So the database runs on its own event loop, on its own daemon thread. Its
+executor belongs to us, nothing else uses it, and LiveKit's lifecycle cannot
+reach it. The agent awaits results across the thread boundary as normal.
 """
 
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import json
 import logging
 import os
 import re
+import threading
 from datetime import datetime, timezone
 from typing import Any
 
@@ -32,8 +47,9 @@ import asyncpg
 logger = logging.getLogger("agent.memory")
 
 _pool: asyncpg.Pool | None = None
-_pool_loop: asyncio.AbstractEventLoop | None = None
-_executor: concurrent.futures.ThreadPoolExecutor | None = None
+_loop: asyncio.AbstractEventLoop | None = None
+_thread: threading.Thread | None = None
+_start_lock = threading.Lock()
 
 
 SCHEMA = """
@@ -59,44 +75,41 @@ def slugify(name: str) -> str:
     return re.sub(r"\s+", "-", cleaned)
 
 
-def _install_executor(loop: asyncio.AbstractEventLoop) -> None:
-    """Give the loop a live thread pool for DNS lookups.
-
-    LiveKit shuts down the job loop's default executor once the agent is up.
-    asyncpg resolves hostnames through `loop.getaddrinfo`, which uses that
-    executor, so every connection opened afterwards dies with
-    "Executor shutdown has been called".
-
-    We cannot dodge DNS by connecting to an IP either: Neon routes by TLS SNI,
-    so the hostname has to survive all the way to the handshake. So we supply
-    our own executor instead. LiveKit shut the default one down because it had
-    finished with it, not to forbid its use.
-    """
-    global _executor
-    if _executor is None:
-        _executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=2, thread_name_prefix="nova-db"
-        )
-    loop.set_default_executor(_executor)
+# --- the private database loop ----------------------------------------------
 
 
-async def init() -> None:
-    """Open the pool and make sure the table exists. Safe to call repeatedly.
+def _db_loop() -> asyncio.AbstractEventLoop:
+    """Return the database's own event loop, starting its thread if needed."""
+    global _loop, _thread
+    with _start_lock:
+        if _loop is not None:
+            return _loop
 
-    Rebuilds the pool if the running event loop changed — a pool is bound to
-    the loop that created it, and each LiveKit job gets a fresh one.
-    """
-    global _pool, _pool_loop
+        loop = asyncio.new_event_loop()
 
-    loop = asyncio.get_running_loop()
-    _install_executor(loop)
+        def _run() -> None:
+            asyncio.set_event_loop(loop)
+            loop.run_forever()
 
-    if _pool is not None and _pool_loop is loop and not _pool.is_closing():
-        return
+        _thread = threading.Thread(target=_run, daemon=True, name="nova-db-loop")
+        _thread.start()
+        _loop = loop
+        return loop
 
-    if _pool is not None and _pool_loop is not loop:
-        logger.info("event loop changed — rebuilding pool")
-        _pool = None
+
+async def _call(coro: Any) -> Any:
+    """Run a coroutine on the database loop, awaited from the agent's loop."""
+    future = asyncio.run_coroutine_threadsafe(coro, _db_loop())
+    return await asyncio.wrap_future(future)
+
+
+# --- implementations, all running on the database loop -----------------------
+
+
+async def _ensure_pool() -> asyncpg.Pool:
+    global _pool
+    if _pool is not None and not _pool.is_closing():
+        return _pool
 
     dsn = os.environ["DATABASE_URL"]
     # asyncpg speaks SSL natively and rejects libpq-style query params that the
@@ -106,33 +119,21 @@ async def init() -> None:
     _pool = await asyncpg.create_pool(
         dsn,
         ssl="require",
-        # Open every connection now, while the executor is definitely alive,
-        # so a mid-call acquire() never has to resolve DNS again.
-        min_size=2,
+        min_size=1,
         max_size=2,
-        # Neon's pooler drops idle connections; let asyncpg notice and replace
-        # them rather than handing us a dead socket.
+        # Neon's pooler drops idle connections; let asyncpg replace them rather
+        # than hand us a dead socket.
         max_inactive_connection_lifetime=180.0,
     )
-    _pool_loop = loop
     async with _pool.acquire() as conn:
         await conn.execute(SCHEMA)
     logger.info("memory ready")
+    return _pool
 
 
-async def close() -> None:
-    global _pool
-    if _pool is not None:
-        await _pool.close()
-        _pool = None
-
-
-async def recall(name: str) -> dict[str, Any] | None:
-    """Look a student up by name. None if we have never met them."""
-    await init()
-    assert _pool is not None
-
-    async with _pool.acquire() as conn:
+async def _recall(name: str) -> dict[str, Any] | None:
+    pool = await _ensure_pool()
+    async with pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT user_id, name, language_preference, facts, last_interaction "
             "FROM students WHERE user_id = $1",
@@ -151,23 +152,15 @@ async def recall(name: str) -> dict[str, Any] | None:
     }
 
 
-async def remember(
+async def _remember(
     name: str,
-    facts: dict[str, Any] | None = None,
-    language_preference: str | None = None,
-) -> dict[str, Any]:
-    """Create or update a student's record.
-
-    Facts merge rather than replace, so saving one new weak spot does not wipe
-    the topics we covered last month.
-    """
-    await init()
-    assert _pool is not None
-
+    facts: dict[str, Any] | None,
+    language_preference: str | None,
+) -> dict[str, Any] | None:
+    pool = await _ensure_pool()
     user_id = slugify(name)
-    now = datetime.now(timezone.utc)
 
-    async with _pool.acquire() as conn:
+    async with pool.acquire() as conn:
         await conn.execute(
             """
             INSERT INTO students (user_id, name, language_preference, facts, last_interaction)
@@ -183,26 +176,61 @@ async def remember(
             name.strip(),
             language_preference,
             json.dumps(facts or {}, ensure_ascii=False),
-            now,
+            datetime.now(timezone.utc),
         )
 
-    logger.info(
-        "remembered", extra={"user_id": user_id, "keys": list((facts or {}).keys())}
-    )
-    result = await recall(name)
-    assert result is not None
-    return result
+    logger.info("remembered", extra={"user_id": user_id})
+    return await _recall(name)
 
 
-async def forget(name: str) -> bool:
-    """Delete a student's record entirely. Returns True if a row was removed."""
-    await init()
-    assert _pool is not None
-
-    async with _pool.acquire() as conn:
+async def _forget(name: str) -> bool:
+    pool = await _ensure_pool()
+    async with pool.acquire() as conn:
         status = await conn.execute(
             "DELETE FROM students WHERE user_id = $1", slugify(name)
         )
     removed = status.endswith("1")
     logger.info("forget", extra={"user_id": slugify(name), "removed": removed})
     return removed
+
+
+async def _close() -> None:
+    global _pool
+    if _pool is not None:
+        await _pool.close()
+        _pool = None
+
+
+# --- public API, called from the agent's loop --------------------------------
+
+
+async def init() -> None:
+    """Open the pool ahead of the first lookup. Safe to call repeatedly."""
+    await _call(_ensure_pool())
+
+
+async def recall(name: str) -> dict[str, Any] | None:
+    """Look a student up by name. None if we have never met them."""
+    return await _call(_recall(name))
+
+
+async def remember(
+    name: str,
+    facts: dict[str, Any] | None = None,
+    language_preference: str | None = None,
+) -> dict[str, Any] | None:
+    """Create or update a student's record.
+
+    Facts merge rather than replace, so saving one new weak spot does not wipe
+    the topics we covered last month.
+    """
+    return await _call(_remember(name, facts, language_preference))
+
+
+async def forget(name: str) -> bool:
+    """Delete a student's record entirely. True if a row was removed."""
+    return await _call(_forget(name))
+
+
+async def close() -> None:
+    await _call(_close())

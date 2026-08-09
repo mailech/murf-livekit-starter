@@ -22,6 +22,7 @@ from livekit.plugins import deepgram, google, murf, noise_cancellation, openai, 
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 import memory
+import practice
 from locale_map import (
     DEFAULT_PROFILE,
     LocaleProfile,
@@ -107,10 +108,17 @@ def build_llm():
             # voice loop that shows up as truncated replies and dead air, so
             # turn it off — conversational tutoring needs no deliberation.
             thinking_config=types.ThinkingConfig(thinking_budget=0),
-            # Spoken turns are short by design (see TUTOR_CORE). Capping output
-            # stops the model rambling, which is the single biggest source of
-            # dead air — every extra token is extra time before the turn ends.
-            max_output_tokens=200,
+            # Must be generous: tool-call ARGUMENTS count against this budget,
+            # and a program passed to show_code easily exceeds a few hundred
+            # tokens. At 200 the call was truncated mid-JSON and Gemini returned
+            # MALFORMED_FUNCTION_CALL — silently dropping it, so the agent said
+            # "code is coming" and nothing appeared. Flowcharts survived only
+            # because their arguments are short.
+            #
+            # Spoken brevity is enforced by the prompt (STYLE: under twenty
+            # words a sentence, twenty seconds a turn), not by starving the
+            # model of tokens.
+            max_output_tokens=2048,
         )
 
     return openai.LLM(
@@ -205,6 +213,81 @@ class Assistant(Agent):
         """Clear the screen when moving on to a different topic."""
         await self._push_canvas({"kind": "clear"})
         return "Screen cleared."
+
+    # --- Day 5: real practice problems ------------------------------------
+
+    @function_tool
+    async def find_practice_problem(
+        self,
+        context: RunContext,
+        topic: str = "",
+        level: str | None = None,
+    ) -> str:
+        """Fetch a REAL coding problem for the student to solve.
+
+        Call this whenever the student wants something to practise, asks for a
+        question or an exercise, says they want to try it themselves, or says
+        they have understood a topic and you want to check. Also call it when
+        you finish teaching something and it is time to apply it.
+
+        Call it straight away — do NOT interrogate them first. If they did not
+        name a topic, pass whatever you were just discussing, or the weak spot
+        you remember about them, or leave topic empty and you will get a
+        general problem at their level. Asking "which topic?" before calling is
+        the wrong move; give them something and adjust if they want different.
+
+        This returns an actual problem from Codeforces, not an invented one.
+        Never make up a problem name, rating or link — if this tool fails, say
+        so out loud.
+
+        Args:
+            topic: What to practise, in plain words — "binary search", "dp",
+                "arrays", "graphs", "strings", "recursion", "greedy", "trees".
+                Optional; empty means any topic at their level.
+            level: "beginner", "intermediate" or "advanced". Leave empty to use
+                what you already know about this student from memory.
+        """
+        # Chain with Day 4: if we already know their level, do not ask again.
+        if not level and self._student:
+            record = await memory.recall(self._student)
+            if record:
+                stored = str(record["facts"].get("level", "")) or None
+                if stored:
+                    level = stored
+                    logger.info("practice: level from memory", extra={"lvl": stored})
+
+        try:
+            p = await practice.find_problem(topic, level)
+        except practice.PracticeUnavailableError as exc:
+            logger.warning("practice unavailable: %s", exc)
+            return (
+                "Codeforces could not be reached, so there is NO problem to give. "
+                "Tell the student plainly that the practice site is not responding "
+                "right now, do not invent a problem, and offer to make one up "
+                "yourself or carry on explaining instead."
+            )
+
+        await self._push_canvas(
+            {
+                "kind": "problem",
+                "title": p["name"],
+                "rating": p["rating"],
+                "tags": p["tags"],
+                "url": p["url"],
+                "source": p["source"],
+                "freshness": p["freshness"],
+            }
+        )
+        logger.info(
+            "practice: sent", extra={"problem": p["name"], "rating": p["rating"]}
+        )
+        return (
+            f"Problem is on their screen: '{p['name']}', difficulty {p['rating']}, "
+            f"tags {', '.join(p['tags'])}. From {p['source']}, {p['freshness']}. "
+            f"Say the name and roughly how hard it is, mention it came from "
+            f"Codeforces and how fresh the data is, and tell them it is on screen. "
+            f"Do NOT read the URL or the tag list aloud."
+        )
 
     # --- Day 4: memory ----------------------------------------------------
     # The agent reaches storage ONLY through these tools, never through the

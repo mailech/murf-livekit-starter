@@ -1,6 +1,6 @@
 """Print what Nova currently remembers. Run it on camera to prove persistence.
 
-    uv run python src/show_memory.py
+uv run python src/show_memory.py
 """
 
 import asyncio

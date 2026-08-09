@@ -248,7 +248,7 @@ const STATUS: Record<string, { te: string; en: string; tint: string }> = {
   speaking: { te: 'నోవా మాట్లాడుతుంది', en: 'agent is speaking', tint: C.sky },
 };
 
-function LiveScreen({ onEnd, canvas }: { onEnd: () => void; canvas: CanvasPayload | null }) {
+function LiveScreen({ onEnd, canvas }: { onEnd: () => void; canvas: CanvasPayload[] }) {
   const agent = useAgent();
   const session = useSessionContext();
 
@@ -406,7 +406,7 @@ function LiveScreen({ onEnd, canvas }: { onEnd: () => void; canvas: CanvasPayloa
 
       {/* RIGHT — code + flowcharts */}
       <section className="min-h-0 flex-1">
-        <Canvas item={canvas} />
+        <Canvas items={canvas} />
       </section>
     </div>
   );
@@ -538,7 +538,7 @@ export function NovaView() {
   const [micError, setMicError] = useState<MicError | null>(null);
   const [hasEnded, setHasEnded] = useState(false);
   const [turns, setTurns] = useState(0);
-  const [canvas, setCanvas] = useState<CanvasPayload | null>(null);
+  const [canvas, setCanvas] = useState<CanvasPayload[]>([]);
   const wasConnected = useRef(false);
 
   // The agent pushes code and flowcharts here over the data channel while it
@@ -546,7 +546,8 @@ export function NovaView() {
   useDataChannel('nova-canvas', (msg) => {
     try {
       const payload = JSON.parse(new TextDecoder().decode(msg.payload)) as CanvasPayload;
-      setCanvas(payload.kind === 'clear' ? null : payload);
+      // Cards accumulate so a flowchart and its code stay on screen together.
+      setCanvas((prev) => (payload.kind === 'clear' ? [] : [...prev, payload]));
     } catch {
       /* ignore malformed frames */
     }
@@ -572,7 +573,7 @@ export function NovaView() {
       return;
     }
     setHasEnded(false);
-    setCanvas(null);
+    setCanvas([]);
     await start();
   }, [start]);
 
