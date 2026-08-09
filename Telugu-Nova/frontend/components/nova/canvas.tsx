@@ -199,7 +199,12 @@ export function Canvas({ item }: { item: CanvasPayload | null }) {
     <div className="h-full w-full overflow-auto p-5">
       <AnimatePresence mode="wait">
         {!item || item.kind === 'clear' ? (
-          <motion.div key="empty" className="h-full" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+          <motion.div
+            key="empty"
+            className="h-full"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+          >
             <EmptyCanvas />
           </motion.div>
         ) : item.kind === 'code' ? (

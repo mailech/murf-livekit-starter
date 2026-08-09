@@ -2,14 +2,15 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ConnectionState, Track } from 'livekit-client';
+import { AnimatePresence, motion } from 'motion/react';
 import {
   useAgent,
   useDataChannel,
   useSessionContext,
   useSessionMessages,
   useTrackToggle,
+  useTrackTranscription,
 } from '@livekit/components-react';
-import { AnimatePresence, motion } from 'motion/react';
 import { Canvas, type CanvasPayload } from '@/components/nova/canvas';
 
 /**
@@ -123,9 +124,7 @@ function Bars({ tint, active }: { tint: string; active: boolean }) {
           className="w-2.5 rounded-full"
           style={{ background: tint, opacity: active ? 0.9 : 0.28 }}
           animate={
-            active
-              ? { height: [h * 0.45, h, h * 0.55, h * 0.9, h * 0.45] }
-              : { height: h * 0.4 }
+            active ? { height: [h * 0.45, h, h * 0.55, h * 0.9, h * 0.45] } : { height: h * 0.4 }
           }
           transition={
             active
@@ -150,7 +149,7 @@ function PrimaryButton({
   return (
     <button
       onClick={onClick}
-      className="w-full rounded-2xl py-4 text-[17px] font-semibold text-white transition active:scale-[0.985] hover:brightness-[1.06]"
+      className="w-full rounded-2xl py-4 text-[17px] font-semibold text-white transition hover:brightness-[1.06] active:scale-[0.985]"
       style={{ background: tint, boxShadow: `0 6px 16px ${tint}33` }}
     >
       {children}
@@ -166,10 +165,7 @@ function ReadyScreen({ onStart }: { onStart: () => void }) {
   return (
     <Shell>
       <Mark />
-      <p
-        className="font-mono text-[10px] tracking-[0.22em] uppercase"
-        style={{ color: C.inkSoft }}
-      >
+      <p className="font-mono text-[10px] tracking-[0.22em] uppercase" style={{ color: C.inkSoft }}>
         Computer Science
       </p>
       <h1 className="mt-2.5 text-[32px] font-bold" style={{ color: C.ink }}>
@@ -226,6 +222,22 @@ function ConnectingScreen() {
   );
 }
 
+type Line = { id: string; mine: boolean; text: string; at: number };
+
+/** Collapse repeats of the same speaker saying the same thing.
+ *  Interim and final segments can arrive under different ids. */
+function dedupe(lines: Line[]): Line[] {
+  const seen = new Set<string>();
+  const out: Line[] = [];
+  for (const line of lines) {
+    const key = `${line.mine}:${line.text.trim()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(line);
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // 3. LIVE — listening / thinking / speaking
 // ---------------------------------------------------------------------------
@@ -238,7 +250,37 @@ const STATUS: Record<string, { te: string; en: string; tint: string }> = {
 
 function LiveScreen({ onEnd, canvas }: { onEnd: () => void; canvas: CanvasPayload | null }) {
   const agent = useAgent();
-  const { messages } = useSessionMessages();
+  const session = useSessionContext();
+
+  // Transcripts come straight off the audio tracks. useSessionMessages only
+  // carries typed chat, so on a voice-only call it stays empty — reading the
+  // tracks is what actually produces a live transcript.
+  const agentTrack = agent.isConnected ? agent.microphoneTrack : undefined;
+  const localTrack = session.isConnected ? session.local.microphoneTrack : undefined;
+  const { segments: agentSegments } = useTrackTranscription(agentTrack);
+  const { segments: userSegments } = useTrackTranscription(localTrack);
+
+  // Track segments are the only source. Session messages are NOT merged in:
+  // with text_output enabled the agent publishes each utterance as a message
+  // as well, so including both prints every line twice.
+  const lines = dedupe(
+    [
+      ...userSegments.map((sg) => ({
+        id: `u-${sg.id}`,
+        mine: true,
+        text: sg.text,
+        at: sg.firstReceivedTime,
+      })),
+      ...agentSegments.map((sg) => ({
+        id: `a-${sg.id}`,
+        mine: false,
+        text: sg.text,
+        at: sg.firstReceivedTime,
+      })),
+    ]
+      .filter((l) => l.text?.trim())
+      .sort((a, b) => a.at - b.at)
+  );
   const { toggle: toggleMic, enabled: micOn } = useTrackToggle({
     source: Track.Source.Microphone,
   });
@@ -249,7 +291,7 @@ function LiveScreen({ onEnd, canvas }: { onEnd: () => void; canvas: CanvasPayloa
   const scrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages.length]);
+  }, [lines.length]);
 
   return (
     <div className="flex h-svh w-full flex-col lg:flex-row" style={{ background: C.paper }}>
@@ -269,7 +311,10 @@ function LiveScreen({ onEnd, canvas }: { onEnd: () => void; canvas: CanvasPayloa
             <p className="text-[16px] font-bold" style={{ color: C.ink }}>
               నోవా
             </p>
-            <p className="font-mono text-[10px] tracking-[0.16em] uppercase" style={{ color: C.inkSoft }}>
+            <p
+              className="font-mono text-[10px] tracking-[0.16em] uppercase"
+              style={{ color: C.inkSoft }}
+            >
               Computer Science
             </p>
           </div>
@@ -308,16 +353,16 @@ function LiveScreen({ onEnd, canvas }: { onEnd: () => void; canvas: CanvasPayloa
           className="mt-4 min-h-0 flex-1 overflow-y-auto rounded-2xl p-3.5"
           style={{ background: C.paper, border: `1px solid ${C.line}` }}
         >
-          {messages.length === 0 ? (
+          {lines.length === 0 ? (
             <p className="pt-10 text-center text-[13px]" style={{ color: C.inkSoft }}>
               మాట్లాడు — ఇక్కడ కనిపిస్తుంది
             </p>
           ) : (
             <div className="flex flex-col gap-2.5">
-              {messages.map((m) => {
-                const mine = m.from?.isLocal;
+              {lines.map((line) => {
+                const mine = line.mine;
                 return (
-                  <div key={m.id} className={mine ? 'text-right' : 'text-left'}>
+                  <div key={line.id} className={mine ? 'text-right' : 'text-left'}>
                     <span
                       className="mb-1 block font-mono text-[9px] tracking-[0.14em] uppercase"
                       style={{ color: C.inkSoft }}
@@ -332,7 +377,7 @@ function LiveScreen({ onEnd, canvas }: { onEnd: () => void; canvas: CanvasPayloa
                           : { background: `${C.sky}1A`, color: C.ink }
                       }
                     >
-                      {m.message}
+                      {line.text}
                     </span>
                   </div>
                 );
@@ -409,7 +454,11 @@ const MIC_COPY: Record<MicError, { title: string; body: string; how: string[] }>
   notfound: {
     title: 'మైక్ దొరకలేదు',
     body: 'ఈ device లో microphone కనిపించట్లేదు.',
-    how: ['Headset లేదా mic connect చెయ్యి', 'System settings లో input device చూడు', 'Reload చెయ్యి'],
+    how: [
+      'Headset లేదా mic connect చెయ్యి',
+      'System settings లో input device చూడు',
+      'Reload చెయ్యి',
+    ],
   },
   other: {
     title: 'మైక్ ఓపెన్ కాలేదు',
@@ -482,8 +531,9 @@ const FADE = {
 };
 
 export function NovaView() {
-  const { connectionState, isConnected, start, end } = useSessionContext();
-  const { messages } = useSessionMessages();
+  const session = useSessionContext();
+  const { connectionState, isConnected, start, end } = session;
+  const { messages } = useSessionMessages(session);
 
   const [micError, setMicError] = useState<MicError | null>(null);
   const [hasEnded, setHasEnded] = useState(false);

@@ -21,6 +21,7 @@ from livekit.agents import (
 from livekit.plugins import deepgram, google, murf, noise_cancellation, openai, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
+import memory
 from locale_map import (
     DEFAULT_PROFILE,
     LocaleProfile,
@@ -128,6 +129,7 @@ class Assistant(Agent):
         self._profile = profile
         self._base = profile  # name/state/district stay fixed across switches
         self._room = room
+        self._student: str | None = None  # set once we know who we are talking to
 
     async def _push_canvas(self, payload: dict) -> None:
         """Send something for the student to LOOK at, not listen to.
@@ -203,6 +205,106 @@ class Assistant(Agent):
         """Clear the screen when moving on to a different topic."""
         await self._push_canvas({"kind": "clear"})
         return "Screen cleared."
+
+    # --- Day 4: memory ----------------------------------------------------
+    # The agent reaches storage ONLY through these tools, never through the
+    # prompt, so everything it remembers is auditable and deletable.
+
+    @function_tool
+    async def recall_student(self, context: RunContext, name: str) -> str:
+        """Look up whether you have taught this student before.
+
+        Call this as soon as they tell you their name — before you say anything
+        else about them. Never guess whether you know someone.
+
+        Args:
+            name: The name they gave you, spelled as you heard it.
+        """
+        record = await memory.recall(name)
+        if record is None:
+            logger.info("recall: new student", extra={"student": name})
+            return (
+                f"No record for {name}. This is a first meeting — greet them as "
+                f"someone new. Do not pretend to remember anything."
+            )
+
+        self._student = record["name"]
+        facts = record["facts"]
+        logger.info("recall: returning student", extra={"student": record["name"]})
+        return (
+            f"You have taught {record['name']} before. "
+            f"Last time: {record['last_interaction']}. "
+            f"What you know: {json.dumps(facts, ensure_ascii=False)}. "
+            f"Welcome them back by name and pick up from one specific thing here "
+            f"— ideally something they found hard. Do not read the whole list out."
+        )
+
+    @function_tool
+    async def remember_student(
+        self,
+        context: RunContext,
+        name: str,
+        level: str | None = None,
+        topic_covered: str | None = None,
+        weak_spot: str | None = None,
+        language_preference: str | None = None,
+    ) -> str:
+        """Save what you learned about this student, so next time is better.
+
+        ONLY call this after you have told them you are going to remember and
+        they have agreed. If they said no, or you did not ask, do not call it.
+
+        Args:
+            name: Their name.
+            level: How far along they are, e.g. "first year, just started C".
+            topic_covered: One topic you got through today, e.g. "binary search".
+            weak_spot: A mistake they keep making, e.g. "confuses = and ==".
+                This is the single most useful thing to store.
+            language_preference: "te", "hi" or "en" if they made it clear.
+        """
+        facts: dict[str, object] = {}
+        existing = await memory.recall(name)
+        prior = existing["facts"] if existing else {}
+
+        if level:
+            facts["level"] = level
+        # Append to lists rather than replacing, so history accumulates.
+        for key, value in (
+            ("topics_covered", topic_covered),
+            ("weak_spots", weak_spot),
+        ):
+            if value:
+                current = list(prior.get(key, []) or [])
+                if value not in current:
+                    current.append(value)
+                facts[key] = current
+
+        if not facts and not language_preference:
+            return "Nothing to save."
+
+        await memory.remember(name, facts, language_preference)
+        self._student = name
+        logger.info("remembered", extra={"student": name, "keys": list(facts.keys())})
+        return "Saved. Tell them briefly that you will remember, then carry on."
+
+    @function_tool
+    async def forget_student(self, context: RunContext, name: str) -> str:
+        """Delete everything you have stored about this student.
+
+        Call this the moment they ask to be forgotten. Do not argue, do not ask
+        why, do not try to talk them out of it. Confirm once it is done.
+
+        Args:
+            name: Their name.
+        """
+        removed = await memory.forget(name)
+        self._student = None
+        logger.info("forget", extra={"student": name, "removed": removed})
+        return (
+            "Deleted everything about them. Confirm plainly that it is gone."
+            if removed
+            else "There was nothing stored about them. Say so plainly."
+        )
 
     async def stt_node(self, audio, model_settings):
         """Watch the detected language and follow the student when they switch.
@@ -291,6 +393,13 @@ async def my_agent(ctx: JobContext):
         "room": ctx.room.name,
     }
 
+    # Open the connection pool before the first turn, so the initial lookup is
+    # not paying for a cold TLS handshake while the student waits.
+    try:
+        await memory.init()
+    except Exception:
+        logger.exception("memory unavailable — continuing without it")
+
     logger.info(
         "session locale resolved",
         extra={
@@ -361,6 +470,9 @@ async def my_agent(ctx: JobContext):
         agent=Assistant(PROFILE, room=ctx.room),
         room=ctx.room,
         room_options=room_io.RoomOptions(
+            # Publish transcriptions to the browser so the on-screen transcript
+            # fills in. Enabled explicitly rather than relying on the default.
+            text_output=room_io.TextOutputOptions(sync_transcription=True),
             audio_input=room_io.AudioInputOptions(
                 noise_cancellation=lambda params: (
                     noise_cancellation.BVCTelephony()

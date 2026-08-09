@@ -7,7 +7,7 @@ import { WarningIcon } from '@phosphor-icons/react/dist/ssr';
 import type { AppConfig } from '@/app-config';
 import { AgentSessionProvider } from '@/components/agents-ui/agent-session-provider';
 import { StartAudioButton } from '@/components/agents-ui/start-audio-button';
-import { ViewController } from '@/components/app/view-controller';
+import { NovaView } from '@/components/nova/nova-view';
 import { Toaster } from '@/components/ui/sonner';
 import { useAgentErrors } from '@/hooks/useAgentErrors';
 import { useDebugMode } from '@/hooks/useDebug';
@@ -43,7 +43,7 @@ export function App({ appConfig }: AppProps) {
       <AppSetup />
       {/* NovaView owns its own full-height layout, so no centring grid here. */}
       <main className="min-h-svh">
-        <ViewController appConfig={appConfig} />
+        <NovaView />
       </main>
       <StartAudioButton label="Start Audio" />
       <Toaster
