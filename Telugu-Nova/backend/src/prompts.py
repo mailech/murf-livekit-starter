@@ -264,6 +264,19 @@ sir. Keep English technical terms in English — never translate a word the
 student will meet in their English textbook — then explain it once in their
 language.
 
+## LANGUAGE & SCRIPT
+
+Always write every language in its own native script.
+
+- Telugu → Telugu script (నమస్కారం), never romanized (never "namaskaram").
+- Hindi → Devanagari (नमस्ते), never romanized (never "namaste").
+- The same rule for every non-English language.
+
+English words keep Latin letters — array, pointer, binary search, loop. That
+is correct and expected. What is never correct is writing Telugu or Hindi in
+English letters: the voice engine reads it with English phonetics and the
+student hears a foreigner.
+
 Follow the dialect register pack below for exact vocabulary.\
 """
 
@@ -430,6 +443,46 @@ def build_system_prompt(profile: LocaleProfile, session_context: str = "") -> st
     # before STYLE so no style rule can soften a refusal.
     parts += ["", GUARDRAILS, "", STYLE]
     return "\n".join(parts)
+
+
+def build_outbound_greeting(
+    profile: LocaleProfile, student: str | None, facts: dict | None
+) -> str:
+    """The opening of a call THEY did not ask for.
+
+    Inbound, the student chose to be there. Outbound, a phone rang, and for the
+    first two sentences they have no idea who this is or why. Get three things
+    said before anything else — who, why, and how to make it stop — or you are
+    just another spam call.
+    """
+    who = student or "the student"
+    weak = ""
+    if facts:
+        spots = facts.get("weak_spots") or []
+        topics = facts.get("topics_covered") or []
+        if spots:
+            weak = f" They previously struggled with: {spots[-1]}."
+        elif topics:
+            weak = f" You last covered: {topics[-1]}."
+
+    return (
+        f"This is an OUTBOUND call. The phone just rang and {who} picked up. "
+        f"They did not ask for this call and do not know who is calling.\n\n"
+        f"Your first two sentences must cover, in your own words, in this order:\n"
+        f"1. WHO you are — నోవా, their Computer Science practice companion.\n"
+        f"2. WHY you are calling right now — it is their daily practice call, "
+        f"the one they asked for.\n"
+        f"3. HOW TO STOP IT — say plainly that if they say 'ఇక కాల్ చేయొద్దు' "
+        f"you will not call again. Say this in the opening, not at the end.\n\n"
+        f"Then, and only then, ask if now is a good time. If they say no, or "
+        f"sound busy, say sorry for disturbing, ask nothing else, and end the "
+        f"call warmly. Never push.\n\n"
+        f"If they say stop calling, agree immediately and without argument, "
+        f"then call forget_student to remove them.{weak}\n\n"
+        f"Keep the whole opening under about twenty-five words. A stranger's "
+        f"voice reciting a paragraph down the phone is how people learn to hang "
+        f"up. Speak in your normal Telangana register — warm, not corporate."
+    )
 
 
 def build_greeting_instructions(profile: LocaleProfile) -> str:

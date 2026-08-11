@@ -46,6 +46,7 @@ credentials.json
 voice-samples/
 *.mp3
 *.wav
+*.mp4
 
 # --- Editors & OS -------------------------------------------------------------
 .DS_Store

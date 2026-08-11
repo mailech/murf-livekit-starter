@@ -29,7 +29,11 @@ from locale_map import (
     normalise_language,
     resolve,
 )
-from prompts import build_greeting_instructions, build_system_prompt
+from prompts import (
+    build_greeting_instructions,
+    build_outbound_greeting,
+    build_system_prompt,
+)
 from transliterate import transliterate_stream
 
 logger = logging.getLogger("agent")
@@ -548,9 +552,13 @@ async def my_agent(ctx: JobContext):
     # # Start the avatar and wait for it to join
     # await avatar.start(session, room=ctx.room)
 
+    # Keep a reference: the outbound path needs to tell the Assistant who it
+    # rang, so memory lookups during the call attach to the right student.
+    assistant = Assistant(PROFILE, room=ctx.room)
+
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
-        agent=Assistant(PROFILE, room=ctx.room),
+        agent=assistant,
         room=ctx.room,
         room_options=room_io.RoomOptions(
             # Publish transcriptions to the browser so the on-screen transcript
@@ -570,10 +578,33 @@ async def my_agent(ctx: JobContext):
     # Join the room and connect to the user
     await ctx.connect()
 
-    # Speak first, in-dialect, before the student says anything. This is the
-    # hook moment from design section 4.4 — the app greeting them in their own
-    # register from second zero is the whole product promise.
-    await session.generate_reply(instructions=build_greeting_instructions(PROFILE))
+    # Speak first, in-dialect, before the student says anything.
+    #
+    # Outbound needs a completely different opening: they did not ask for this
+    # call and do not know who is ringing, so the first two sentences must say
+    # who, why, and how to stop it. outbound.py signals this through the job
+    # metadata it attaches at dispatch.
+    job_meta: dict = {}
+    if ctx.job and ctx.job.metadata:
+        try:
+            job_meta = json.loads(ctx.job.metadata)
+        except (ValueError, TypeError):
+            logger.warning("job metadata was not JSON; treating call as inbound")
+
+    if job_meta.get("direction") == "outbound":
+        student = job_meta.get("student")
+        facts = None
+        if student:
+            record = await memory.recall(student)
+            if record:
+                facts = record["facts"]
+                assistant._student = student
+        logger.info("outbound call", extra={"callee": student or "unknown"})
+        greeting = build_outbound_greeting(PROFILE, student, facts)
+    else:
+        greeting = build_greeting_instructions(PROFILE)
+
+    await session.generate_reply(instructions=greeting)
 
 
 if __name__ == "__main__":
