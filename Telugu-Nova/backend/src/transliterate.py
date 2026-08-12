@@ -44,13 +44,31 @@ _UNSPEAKABLE = re.compile(
 )
 
 
-def strip_unspeakable(text: str) -> str:
-    """Remove characters the voice engine cannot pronounce.
+# Gemini sometimes emits its tool-calling scaffolding as plain TEXT instead of
+# a structured function call: SSML wrappers, <reserved_code> blocks, and lines
+# like print(default_api.recall_student(name='...')). Left alone, the voice
+# reads all of it out. Observed live, not theoretical.
+_SCAFFOLDING = re.compile(
+    r"""
+      </?\s*(speak|voice|prosody|break|s|p|reserved_code|tool_code|thinking)[^>]*>
+    | print\s*\(\s*default_api\.[^\n]*
+    | default_api\.\w+\([^\n]*
+    | ^\s*```[a-zA-Z]*\s*$
+    """,
+    re.IGNORECASE | re.VERBOSE | re.MULTILINE,
+)
 
-    Collapses the whitespace left behind so we do not hand the tokenizer a
-    sentence with a hole in it.
+
+def strip_unspeakable(text: str) -> str:
+    """Remove anything the voice should never say out loud.
+
+    Two classes of rubbish: characters the engine cannot pronounce (emoji,
+    arrows), and model scaffolding that leaked into the text channel. Whitespace
+    is collapsed afterwards so the tokenizer is not handed a sentence with a
+    hole in it.
     """
-    cleaned = _UNSPEAKABLE.sub("", text)
+    cleaned = _SCAFFOLDING.sub("", text)
+    cleaned = _UNSPEAKABLE.sub("", cleaned)
     return re.sub(r"[ \t]{2,}", " ", cleaned)
 
 

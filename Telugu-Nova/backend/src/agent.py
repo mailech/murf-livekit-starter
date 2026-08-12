@@ -21,6 +21,7 @@ from livekit.agents import (
 from livekit.plugins import deepgram, google, murf, noise_cancellation, openai, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
+import escalations
 import memory
 import practice
 from locale_map import (
@@ -34,7 +35,7 @@ from prompts import (
     build_outbound_greeting,
     build_system_prompt,
 )
-from transliterate import transliterate_stream
+from transliterate import strip_unspeakable, transliterate_stream
 
 logger = logging.getLogger("agent")
 
@@ -293,6 +294,99 @@ class Assistant(Agent):
             f"Do NOT read the URL or the tag list aloud."
         )
 
+    # --- Day 7: asking a human for help -----------------------------------
+
+    @function_tool
+    async def create_escalation(
+        self,
+        context: RunContext,
+        reason: str,
+        urgency: str,
+        summary: str,
+        already_tried: str = "",
+        follow_up: str = "",
+    ) -> str:
+        """Hand this student to a real human.
+
+        Call this in exactly two situations:
+
+        1. reason="wellbeing" — they are distressed, frightened, or said
+           something that worries you about their safety. You are not a
+           counsellor. Do not try to fix it yourself.
+        2. reason="teacher" — you have genuinely failed to teach it. You have
+           explained the same thing several different ways and they still
+           cannot follow, or they need something only a real teacher can give.
+
+        ONLY call this after you have told them what you want to send and they
+        have agreed. If they said no, do not call it.
+
+        Never put a phone number, email, password, OTP or ID number in any
+        field. Never paste the conversation. Summarise.
+
+        Args:
+            reason: "wellbeing" or "teacher".
+            urgency: "low", "medium", "high", or "emergency". Use "emergency"
+                only for immediate physical safety.
+            summary: Two sentences on who needs help and what happened.
+            already_tried: What you attempted, so the human does not repeat it.
+            follow_up: How they would like to be reached, in their words.
+        """
+        result = await escalations.create(
+            student=self._student,
+            reason=reason,
+            urgency=urgency,
+            summary=summary,
+            already_tried=already_tried,
+            language=self._profile.language,
+            follow_up=follow_up,
+        )
+        ref = result["ref"]
+        logger.info(
+            "escalation", extra={"ref": ref, "reason": reason, "urgency": urgency}
+        )
+
+        when = (
+            "Someone checks these through the day, so it may be a few hours. "
+            "Do not promise anyone will call immediately."
+        )
+        if result["updated"]:
+            return (
+                f"There was already an open request for this, so it was updated "
+                f"rather than duplicated. The reference is still {ref}. Tell them "
+                f"the reference, digit by digit, and that it is already with a "
+                f"human. {when}"
+            )
+        return (
+            f"Filed. Reference {ref}. Read it to them slowly, digit by digit, and "
+            f"tell them to keep it. Say plainly what happens next. {when}"
+        )
+
+    @function_tool
+    async def check_escalation(self, context: RunContext, ref: str) -> str:
+        """Look up a request the student already has a reference for.
+
+        Call this when they read a reference back to you and ask what happened
+        to it.
+
+        Args:
+            ref: What they said, e.g. "NOVA-4821" or just "4821".
+        """
+        cleaned = ref.strip().upper()
+        if not cleaned.startswith("NOVA-"):
+            cleaned = f"NOVA-{''.join(c for c in cleaned if c.isdigit())}"
+
+        record = await escalations.status(cleaned)
+        if record is None:
+            return (
+                f"No request found for {cleaned}. Ask them to read it again — "
+                f"it is the word Nova and four digits. Do not invent a status."
+            )
+        return (
+            f"Request {record['ref']} is '{record['status']}', urgency "
+            f"{record['urgency']}, raised {record['created_at']:%d %B}. "
+            f"Tell them plainly, and do not promise a time you do not know."
+        )
+
     # --- Day 4: memory ----------------------------------------------------
     # The agent reaches storage ONLY through these tools, never through the
     # prompt, so everything it remembers is auditable and deletable.
@@ -443,6 +537,25 @@ class Assistant(Agent):
         # only kicks in when the profile asks for it.
         text = transliterate_stream(text, self._profile.tts_transliterate)
         return Agent.default.tts_node(self, text, model_settings)
+
+    async def transcription_node(self, text, model_settings):
+        """Clean the on-screen transcript too.
+
+        tts_node only fixes what is spoken. Without this, leaked scaffolding
+        like <speak> or print(default_api...) still appears on the student's
+        screen even though they never hear it.
+        """
+
+        async def cleaned():
+            async for chunk in text:
+                if isinstance(chunk, str):
+                    out = strip_unspeakable(chunk)
+                    if out:
+                        yield out
+                else:
+                    yield chunk
+
+        return Agent.default.transcription_node(self, cleaned(), model_settings)
 
     # To add tools, use the @function_tool decorator.
     # Here's an example that adds a simple weather tool.
