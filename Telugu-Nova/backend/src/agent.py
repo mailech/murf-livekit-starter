@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from google.genai import types
@@ -21,6 +22,7 @@ from livekit.agents import (
 from livekit.plugins import deepgram, google, murf, noise_cancellation, openai, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
+import analytics
 import escalations
 import memory
 import practice
@@ -143,6 +145,15 @@ class Assistant(Agent):
         self._base = profile  # name/state/district stay fixed across switches
         self._room = room
         self._student: str | None = None  # set once we know who we are talking to
+        # Day 8: what actually happened on this call. Only tools moving these
+        # counts as delivery — the model cannot talk its way to a success.
+        self.stats: dict[str, int] = {
+            "concepts_taught": 0,
+            "problems_given": 0,
+            "escalations": 0,
+            "turns": 0,
+            "tool_errors": 0,
+        }
 
     async def _push_canvas(self, payload: dict) -> None:
         """Send something for the student to LOOK at, not listen to.
@@ -184,6 +195,7 @@ class Assistant(Agent):
         await self._push_canvas(
             {"kind": "code", "title": title, "language": language, "code": code}
         )
+        self.stats["concepts_taught"] += 1
         logger.info("canvas: code", extra={"title": title, "language": language})
         return "The code is now on the student's screen. Explain what it does."
 
@@ -264,6 +276,7 @@ class Assistant(Agent):
         try:
             p = await practice.find_problem(topic, level)
         except practice.PracticeUnavailableError as exc:
+            self.stats["tool_errors"] += 1
             logger.warning("practice unavailable: %s", exc)
             return (
                 "Codeforces could not be reached, so there is NO problem to give. "
@@ -283,6 +296,7 @@ class Assistant(Agent):
                 "freshness": p["freshness"],
             }
         )
+        self.stats["problems_given"] += 1
         logger.info(
             "practice: sent", extra={"problem": p["name"], "rating": p["rating"]}
         )
@@ -341,6 +355,7 @@ class Assistant(Agent):
             follow_up=follow_up,
         )
         ref = result["ref"]
+        self.stats["escalations"] += 1
         logger.info(
             "escalation", extra={"ref": ref, "reason": reason, "urgency": urgency}
         )
@@ -496,6 +511,13 @@ class Assistant(Agent):
         """
         async for ev in Agent.default.stt_node(self, audio, model_settings):
             if isinstance(ev, stt.SpeechEvent) and ev.alternatives:
+                # A final transcript means the student actually said something.
+                # This separates "joined and left" from "talked but got nowhere".
+                if (
+                    ev.type == stt.SpeechEventType.FINAL_TRANSCRIPT
+                    and (ev.alternatives[0].text or "").strip()
+                ):
+                    self.stats["turns"] += 1
                 detected = normalise_language(ev.alternatives[0].language)
                 if detected and detected != self._profile.language:
                     await self._switch_language(detected)
@@ -668,6 +690,28 @@ async def my_agent(ctx: JobContext):
     # Keep a reference: the outbound path needs to tell the Assistant who it
     # rang, so memory lookups during the call attach to the right student.
     assistant = Assistant(PROFILE, room=ctx.room)
+
+    # Day 8: open the row now, not at the end. A student who joins and leaves
+    # without speaking is exactly the failure we want counted, and that call
+    # never reaches a tidy ending.
+    call_started = datetime.now(timezone.utc)
+    channel = "phone" if ctx.room.name.startswith("nova-outbound-") else "browser"
+    try:
+        await analytics.start_call(ctx.room.name, channel, PROFILE.language)
+    except Exception:
+        logger.exception("could not open analytics row — call still proceeds")
+
+    async def close_out():
+        """Record the outcome however the call ends, including a hang-up."""
+        try:
+            result = await analytics.finish_call(
+                ctx.room.name, assistant._student, assistant.stats, call_started
+            )
+            logger.info("call outcome", extra=result)
+        except Exception:
+            logger.exception("could not close analytics row")
+
+    ctx.add_shutdown_callback(close_out)
 
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(

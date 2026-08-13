@@ -50,6 +50,9 @@ Tested, not assumed:
 | 3 | Purpose-built frontend: five call states, live transcript, mic-permission recovery |
 | 4 | Persistent memory in Postgres, consent-gated, with a forget-me tool |
 | 5 | Live practice-problem lookup from Codeforces |
+| 6 | Outbound calls over Twilio SIP, with per-outcome retry rules |
+| 7 | Escalation to a human, consent-gated, with a teacher's desk |
+| 8 | Call analytics — success measured from tool side-effects |
 
 ## The stack
 
@@ -70,6 +73,8 @@ Tested, not assumed:
 | `recall_student` | Looks a student up by name |
 | `remember_student` | Saves level, topics covered, weak spots — **only after consent** |
 | `forget_student` | Deletes everything stored about a student |
+| `create_escalation` | Files a request for a human — **only after consent** |
+| `check_escalation` | Looks up a request the student has a reference for |
 
 ## Running it
 
@@ -92,7 +97,31 @@ Then open http://localhost:3002.
 ```bash
 # see what Nova remembers
 uv run python src/show_memory.py
+
+# call a student (needs SIP_OUTBOUND_TRUNK_ID)
+uv run python src/outbound.py +91XXXXXXXXXX --student "Name"
 ```
+
+## Pages
+
+| Route | What it is |
+|---|---|
+| `/` | The student's view — five call states, live transcript, code and flowcharts |
+| `/desk` | Teacher's desk — students Nova handed over, most urgent first |
+| `/stats` | Call analytics — total, successful, failed, and why |
+| `/monitor` | Live view of an in-progress phone call |
+
+## What "a successful call" means
+
+Defined in code, not by asking the model. A call succeeded if the student left
+with something concrete — a concept drawn on screen, a real practice problem, or
+a human found for them. Those counters only move when a tool actually fired, so
+the agent cannot talk its way into a success. Failures are split by cause
+(never spoke / never reached a concept / a tool broke) because those are three
+different problems.
+
+The analytics store counters and timings only: no transcripts, no phone
+numbers, no student content.
 
 ## Known limitations
 
