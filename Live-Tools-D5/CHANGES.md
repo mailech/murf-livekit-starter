@@ -11,7 +11,7 @@
 
 ### Worth knowing
 
-max_output_tokens=200 truncated show_code's arguments mid-JSON. Gemini returned MALFORMED_FUNCTION_CALL and the call was silently dropped.
+max_output_tokens=200 truncated show_code's arguments mid-JSON. The LLM returned MALFORMED_FUNCTION_CALL and the call was silently dropped.
 
 ### Files changed this day
 

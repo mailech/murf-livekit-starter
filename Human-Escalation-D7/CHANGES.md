@@ -12,7 +12,7 @@
 
 ### Worth knowing
 
-Gemini leaked its own tool-call scaffolding into speech — <speak> tags and print(default_api...) were read aloud. Now stripped at the TTS boundary.
+The LLM leaked its own tool-call scaffolding into speech — <speak> tags and print(default_api...) were read aloud. Now stripped at the TTS boundary.
 
 ### Files changed this day
 

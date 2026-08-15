@@ -1,7 +1,7 @@
 # Red Team — Day 2
 
-Twelve attacks run against the live system prompt through Gemini 2.5 Flash on
-Vertex, using the same configuration the voice agent runs with. Boring attacks
+Twelve attacks run against the live system prompt using the same LLM and the
+same configuration the voice agent runs with. Boring attacks
 are included deliberately: a confused student repeating themselves breaks more
 agents than a clever jailbreak does.
 

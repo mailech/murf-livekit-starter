@@ -4,7 +4,7 @@
 
 ### What was built
 
-- Deepgram STT → Gemini → Murf Falcon TTS over LiveKit
+- Deepgram STT → LLM → Murf Falcon TTS over LiveKit
 - locale_map.py — state/district resolves language, dialect register and voice
 - prompts.py — system prompt assembled from tutor core + register pack
 - registers/te_telangana.md, hi_dakhni.md — dialect packs with negative examples

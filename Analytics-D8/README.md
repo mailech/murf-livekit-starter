@@ -45,7 +45,7 @@ Tested, not assumed:
 
 | Day | Feature |
 |---|---|
-| 1 | Telugu voice pipeline — Deepgram STT → Gemini → Murf Falcon TTS over LiveKit |
+| 1 | Telugu voice pipeline — Deepgram STT → LLM → Murf Falcon TTS over LiveKit |
 | 2 | Identity, objectives, guardrails, escalation script. See [RED_TEAM.md](./RED_TEAM.md) |
 | 3 | Purpose-built frontend: five call states, live transcript, mic-permission recovery |
 | 4 | Persistent memory in Postgres, consent-gated, with a forget-me tool |
@@ -58,7 +58,9 @@ Tested, not assumed:
 
 - **TTS** — Murf Falcon, `en-IN-samar` at `locale="te-IN"` (native Telugu)
 - **STT** — Deepgram `nova-3`, `te-IN`
-- **LLM** — Gemini 2.5 Flash on Vertex AI (`asia-south1`), thinking disabled for latency
+- **LLM** — a hosted frontier model, pinned to a South Asia region and with
+  extended thinking disabled, both for latency. Swappable: LiveKit ships plugins
+  for several providers, and only the `llm=` line in `agent.py` changes.
 - **Transport** — LiveKit
 - **Memory** — Postgres on Neon via asyncpg
 - **Frontend** — Next.js, Tailwind, Motion, Shiki
@@ -83,7 +85,8 @@ Tested, not assumed:
 cd backend
 uv sync
 cp .env.example .env.local        # fill in your keys
-gcloud auth application-default login   # Vertex uses ADC, not an API key
+# authenticate whichever LLM provider `agent.py` is configured for — some use
+# a key in .env.local, some use a CLI login. See .env.example.
 uv run python src/agent.py dev
 
 # frontend
@@ -129,8 +132,8 @@ numbers, no student content.
   (`en-IN-samar` + `locale="te-IN"`). Voice and locale are separate knobs; reading
   only a voice's primary `locale` field will wrongly suggest Telugu is unsupported.
 - **No live language switching.** Deepgram rejects language detection in streaming
-  mode, and Google's returns whichever language is listed first regardless of what
-  was spoken — both verified by testing. Language is fixed per call by the
+  mode, and the other major provider tested returns whichever language is listed
+  first regardless of what was spoken — both verified by testing. Language is fixed per call by the
   student's profile.
 - **Students are identified by spoken name**, normalised to a slug. Two students
   with the same name would share a record. Real deployment needs a phone number
