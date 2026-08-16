@@ -59,3 +59,8 @@ Thumbs.db
 *.log
 npm-debug.log*
 pnpm-debug.log*
+
+# The upstream Murf starter clone. Kept locally as a reference, but it carries
+# its own .git directory — committing it creates a broken grey gitlink on
+# GitHub. The Day-1 code lives in Voice-Pipeline-D1/ instead.
+Instructions/
